@@ -15,6 +15,13 @@ async def main():
     agent = AutonomousAgent(api_key, base_dir=os.path.dirname(os.path.abspath(__file__)))
     
     console.print(Panel(f"[bold blue]🤖 {agent.personality.name} - AI Assistant[/]"))
+    console.print(Panel(
+        """[bold green]Verbose Mode Active[/]
+        • Showing detailed task breakdowns
+        • Displaying thought processes
+        • Tracking execution statistics
+        • Visualizing task dependencies"""
+    ))
     console.print(Panel(agent.personality.tone_patterns[agent.personality.tone]["greeting"]))
     
     autonomous_mode = Confirm.ask("\n[bold blue]Enable autonomous mode?[/]")

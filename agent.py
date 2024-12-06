@@ -142,12 +142,42 @@ class Tool:
 class CreateFileTool(Tool):
     def __init__(self, base_dir: str):
         super().__init__("CREATE_FILE", "Creates a new file with specified content", base_dir)
+        self.console = Console()
+    
+    def _display_file_content(self, filepath: str, content: str):
+        """Display the created file content with syntax highlighting."""
+        file_ext = os.path.splitext(filepath)[1].lower()
+        language = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.ts': 'typescript',
+            '.html': 'html',
+            '.css': 'css',
+            '.json': 'json',
+            '.md': 'markdown',
+            '.yaml': 'yaml',
+            '.yml': 'yaml',
+        }.get(file_ext, 'text')
+        
+        self.console.print("\n[bold blue]📄 Created File Content:[/]")
+        self.console.print(
+            Panel(
+                Syntax(
+                    content,
+                    language,
+                    theme="monokai",
+                    line_numbers=True
+                ),
+                title=filepath
+            )
+        )
     
     async def execute(self, filepath: str, content: str):
         full_path = self.resolve_path(filepath)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, 'w') as f:
             f.write(content)
+        self._display_file_content(filepath, content)
         return f"File created: {full_path}"
 
 class RunFileTool(Tool):
@@ -418,9 +448,30 @@ class Task:
 class TaskPlanner:
     def __init__(self):
         self.tasks = []
+        self.console = Console()
+        
+    def _display_task_tree(self, tasks: List[Task]):
+        """Display task dependencies as a tree."""
+        from rich.tree import Tree
+        
+        task_tree = Tree("[bold blue]📋 Task Breakdown")
+        task_dict = {task.description: task for task in tasks}
+        
+        def add_task_node(parent, task):
+            status = "✅" if task.completed else "⏳"
+            node = parent.add(f"{status} [{'green' if task.completed else 'yellow'}]{task.description}[/] (Priority: {task.priority})")
+            for dep in task.dependencies:
+                if dep in task_dict:
+                    add_task_node(node, task_dict[dep])
+        
+        root_tasks = [t for t in tasks if not t.dependencies]
+        for task in root_tasks:
+            add_task_node(task_tree, task)
+            
+        self.console.print(Panel(task_tree))
         
     async def plan_tasks(self, main_task: str, client: AsyncOpenAI) -> List[Task]:
-        """Break down a complex task into smaller subtasks."""
+        self.console.print(Panel("[bold blue]🤔 Planning task breakdown...[/]"))
         prompt = f"""Break down this task into smaller subtasks: {main_task}
         
         Return a JSON array of subtasks in this format:
@@ -442,7 +493,14 @@ class TaskPlanner:
         
         content = response.choices[0].message.content
         subtasks_data = json.loads(content)
-        return [Task(**task_data) for task_data in subtasks_data]
+        tasks = [Task(**task_data) for task_data in subtasks_data]
+        
+        self.console.print("[bold green]📊 Task Analysis:[/]")
+        self.console.print(f"Total subtasks: {len(tasks)}")
+        self.console.print(f"Independent tasks: {len([t for t in tasks if not t.dependencies])}")
+        self._display_task_tree(tasks)
+        
+        return tasks
 
 class AutonomousAgent(Agent):
     def __init__(self, api_key: str, base_dir: str):
@@ -450,6 +508,12 @@ class AutonomousAgent(Agent):
         self.planner = TaskPlanner()
         self.active = False
         self.task_queue = []
+        self.execution_stats = {
+            "total_tasks": 0,
+            "completed_tasks": 0,
+            "failed_tasks": 0,
+            "retries": 0
+        }
         
     def start_autonomous_mode(self):
         """Enable autonomous mode."""
@@ -465,78 +529,128 @@ class AutonomousAgent(Agent):
             self.personality.format_message("error", "[bold red]Autonomous mode deactivated[/]")
         ))
 
-    async def evaluate_result(self, task: str, result: str) -> bool:
-        """Evaluate if the task was completed successfully."""
+    def _display_execution_stats(self):
+        """Display current execution statistics."""
+        from rich.table import Table
+        
+        stats_table = Table(title="Execution Statistics")
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="magenta")
+        
+        for key, value in self.execution_stats.items():
+            stats_table.add_row(key.replace('_', ' ').title(), str(value))
+            
+        self.console.print(stats_table)
+
+    async def evaluate_result(self, task: str, result: str) -> Dict:
+        """Enhanced evaluation with detailed feedback."""
         prompt = f"""Task: {task}
         Result: {result}
         
-        Was this task completed successfully? Consider:
-        1. Did the result achieve the task's goal?
-        2. Are there any errors in the output?
-        3. Is additional work needed?
+        Provide detailed evaluation in JSON format:
+        {{
+            "success": true/false,
+            "confidence": 0-100,
+            "reason": "detailed explanation",
+            "suggestions": ["improvement suggestion 1", "improvement suggestion 2"],
+            "warnings": ["warning 1", "warning 2"]
+        }}"""
         
-        Return JSON: {{"success": true/false, "reason": "explanation"}}"""
+        self.console.print(Panel("[bold yellow]🔍 Evaluating task result...[/]"))
         
         response = await self.client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a task evaluation AI. Evaluate task completion accuracy."},
+                {"role": "system", "content": "You are a task evaluation AI. Provide detailed analysis."},
                 {"role": "user", "content": prompt}
             ]
         )
         
         evaluation = json.loads(response.choices[0].message.content)
-        return evaluation["success"]
+        
+        # Display evaluation details
+        self.console.print(Panel.fit(
+            f"""[bold]{'✅ Success' if evaluation['success'] else '❌ Failed'}[/]
+            Confidence: [cyan]{evaluation['confidence']}%[/]
+            Reason: [yellow]{evaluation['reason']}[/]
+            """,
+            title="Evaluation Results"
+        ))
+        
+        if evaluation.get('suggestions'):
+            self.console.print("[bold blue]💡 Suggestions:[/]")
+            for suggestion in evaluation['suggestions']:
+                self.console.print(f"  • {suggestion}")
+                
+        if evaluation.get('warnings'):
+            self.console.print("[bold red]⚠️ Warnings:[/]")
+            for warning in evaluation['warnings']:
+                self.console.print(f"  • {warning}")
+        
+        return evaluation
 
     async def autonomous_execute(self, main_task: str):
-        """Execute tasks autonomously with planning and evaluation."""
-        self.task_queue = await self.planner.plan_tasks(main_task, self.client)
+        """Enhanced autonomous execution with detailed progress tracking."""
+        from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
         
-        while self.active and self.task_queue:
-            # Get next task with satisfied dependencies
-            available_tasks = [
-                task for task in self.task_queue 
-                if not task.completed and 
-                all(any(t.completed and t.description == dep 
-                       for t in self.task_queue) 
-                    for dep in task.dependencies)
-            ]
+        self.console.print(Panel(f"[bold blue]🎯 Main Task:[/] {main_task}"))
+        self.task_queue = await self.planner.plan_tasks(main_task, self.client)
+        self.execution_stats["total_tasks"] = len(self.task_queue)
+        
+        with Progress(
+            SpinnerColumn(),
+            *Progress.get_default_columns(),
+            TimeElapsedColumn(),
+            console=self.console
+        ) as progress:
+            overall_task = progress.add_task("[bold blue]Overall Progress", total=len(self.task_queue))
             
-            if not available_tasks:
-                break
+            while self.active and self.task_queue:
+                available_tasks = [
+                    task for task in self.task_queue 
+                    if not task.completed and 
+                    all(any(t.completed and t.description == dep 
+                           for t in self.task_queue) 
+                        for dep in task.dependencies)
+                ]
                 
-            # Sort by priority and take the highest
-            current_task = sorted(available_tasks, key=lambda t: t.priority)[0]
-            
-            try:
-                result = await self.execute(current_task.description)
-                success = await self.evaluate_result(current_task.description, result)
-                
-                if success:
-                    current_task.completed = True
-                    current_task.result = result
-                    self.console.print(Panel(
-                        self.personality.format_message(
-                            "success", 
-                            f"[bold green]Completed subtask:[/] {current_task.description}"
-                        )
-                    ))
-                else:
-                    self.console.print(Panel(
-                        self.personality.format_message(
-                            "error",
-                            f"[bold yellow]Task needs revision:[/] {current_task.description}"
-                        )
-                    ))
-                    # Optionally, retry or modify the task
+                if not available_tasks:
+                    break
                     
-            except Exception as e:
-                self.console.print(
-                    self.personality.format_message(
-                        "error",
-                        f"[bold red]Error in subtask:[/] {str(e)}"
-                    )
-                )
-                # Handle failure, possibly retry or mark as failed
+                current_task = sorted(available_tasks, key=lambda t: t.priority)[0]
                 
-        return all(task.completed for task in self.task_queue)
+                self.console.print(Panel(
+                    f"[bold blue]📌 Current Task:[/] {current_task.description}\n"
+                    f"[bold cyan]Priority:[/] {current_task.priority}\n"
+                    f"[bold yellow]Dependencies:[/] {', '.join(current_task.dependencies) or 'None'}"
+                ))
+                
+                try:
+                    result = await self.execute(current_task.description)
+                    evaluation = await self.evaluate_result(current_task.description, result)
+                    
+                    if evaluation["success"]:
+                        current_task.completed = True
+                        current_task.result = result
+                        self.execution_stats["completed_tasks"] += 1
+                        progress.advance(overall_task)
+                    else:
+                        self.execution_stats["failed_tasks"] += 1
+                        if evaluation["confidence"] < 50:  # Retry threshold
+                            self.execution_stats["retries"] += 1
+                            self.console.print("[bold yellow]🔄 Scheduling task for retry...[/]")
+                            continue
+                            
+                except Exception as e:
+                    self.execution_stats["failed_tasks"] += 1
+                    self.console.print(f"[bold red]❌ Error:[/] {str(e)}")
+                
+                self._display_execution_stats()
+                
+        success = all(task.completed for task in self.task_queue)
+        self.console.print(Panel(
+            f"[bold {'green' if success else 'red'}]"
+            f"{'✅ All tasks completed successfully!' if success else '❌ Some tasks failed!'}"
+            f"[/]"
+        ))
+        return success
