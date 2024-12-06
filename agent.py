@@ -403,3 +403,140 @@ Your response must be valid JSON.""".format(
                 style="red"
             )
             raise
+
+@dataclass
+class Task:
+    description: str
+    priority: int = 1
+    dependencies: List[str] = None
+    completed: bool = False
+    result: Optional[str] = None
+
+    def __post_init__(self):
+        self.dependencies = self.dependencies or []
+
+class TaskPlanner:
+    def __init__(self):
+        self.tasks = []
+        
+    async def plan_tasks(self, main_task: str, client: AsyncOpenAI) -> List[Task]:
+        """Break down a complex task into smaller subtasks."""
+        prompt = f"""Break down this task into smaller subtasks: {main_task}
+        
+        Return a JSON array of subtasks in this format:
+        [{{
+            "description": "subtask description",
+            "priority": priority_number (1-5),
+            "dependencies": ["description of dependent task 1", "description of dependent task 2"]
+        }}]
+        
+        Ensure subtasks are atomic and can be executed independently when dependencies are met."""
+        
+        response = await client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a task planning AI. Break down complex tasks into smaller, manageable subtasks."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        content = response.choices[0].message.content
+        subtasks_data = json.loads(content)
+        return [Task(**task_data) for task_data in subtasks_data]
+
+class AutonomousAgent(Agent):
+    def __init__(self, api_key: str, base_dir: str):
+        super().__init__(api_key, base_dir)
+        self.planner = TaskPlanner()
+        self.active = False
+        self.task_queue = []
+        
+    def start_autonomous_mode(self):
+        """Enable autonomous mode."""
+        self.active = True
+        self.console.print(Panel(
+            self.personality.format_message("success", "[bold green]Autonomous mode activated[/]")
+        ))
+        
+    def stop_autonomous_mode(self):
+        """Disable autonomous mode."""
+        self.active = False
+        self.console.print(Panel(
+            self.personality.format_message("error", "[bold red]Autonomous mode deactivated[/]")
+        ))
+
+    async def evaluate_result(self, task: str, result: str) -> bool:
+        """Evaluate if the task was completed successfully."""
+        prompt = f"""Task: {task}
+        Result: {result}
+        
+        Was this task completed successfully? Consider:
+        1. Did the result achieve the task's goal?
+        2. Are there any errors in the output?
+        3. Is additional work needed?
+        
+        Return JSON: {{"success": true/false, "reason": "explanation"}}"""
+        
+        response = await self.client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a task evaluation AI. Evaluate task completion accuracy."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        evaluation = json.loads(response.choices[0].message.content)
+        return evaluation["success"]
+
+    async def autonomous_execute(self, main_task: str):
+        """Execute tasks autonomously with planning and evaluation."""
+        self.task_queue = await self.planner.plan_tasks(main_task, self.client)
+        
+        while self.active and self.task_queue:
+            # Get next task with satisfied dependencies
+            available_tasks = [
+                task for task in self.task_queue 
+                if not task.completed and 
+                all(any(t.completed and t.description == dep 
+                       for t in self.task_queue) 
+                    for dep in task.dependencies)
+            ]
+            
+            if not available_tasks:
+                break
+                
+            # Sort by priority and take the highest
+            current_task = sorted(available_tasks, key=lambda t: t.priority)[0]
+            
+            try:
+                result = await self.execute(current_task.description)
+                success = await self.evaluate_result(current_task.description, result)
+                
+                if success:
+                    current_task.completed = True
+                    current_task.result = result
+                    self.console.print(Panel(
+                        self.personality.format_message(
+                            "success", 
+                            f"[bold green]Completed subtask:[/] {current_task.description}"
+                        )
+                    ))
+                else:
+                    self.console.print(Panel(
+                        self.personality.format_message(
+                            "error",
+                            f"[bold yellow]Task needs revision:[/] {current_task.description}"
+                        )
+                    ))
+                    # Optionally, retry or modify the task
+                    
+            except Exception as e:
+                self.console.print(
+                    self.personality.format_message(
+                        "error",
+                        f"[bold red]Error in subtask:[/] {str(e)}"
+                    )
+                )
+                # Handle failure, possibly retry or mark as failed
+                
+        return all(task.completed for task in self.task_queue)

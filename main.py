@@ -1,8 +1,8 @@
 import asyncio
 import os
-from agent import Agent
+from agent import AutonomousAgent
 from rich.console import Console
-from rich.prompt import Prompt
+from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 
 console = Console()
@@ -12,10 +12,14 @@ async def main():
     if not api_key:
         raise ValueError("Please set OPENAI_API_KEY environment variable")
     
-    agent = Agent(api_key, base_dir=os.path.dirname(os.path.abspath(__file__)))
+    agent = AutonomousAgent(api_key, base_dir=os.path.dirname(os.path.abspath(__file__)))
     
     console.print(Panel(f"[bold blue]🤖 {agent.personality.name} - AI Assistant[/]"))
     console.print(Panel(agent.personality.tone_patterns[agent.personality.tone]["greeting"]))
+    
+    autonomous_mode = Confirm.ask("\n[bold blue]Enable autonomous mode?[/]")
+    if autonomous_mode:
+        agent.start_autonomous_mode()
     
     while True:
         task = Prompt.ask("\n[bold green]Enter your task[/] (or 'exit' to quit)")
@@ -24,7 +28,10 @@ async def main():
             break
             
         try:
-            result = await agent.execute(task)
+            if autonomous_mode:
+                await agent.autonomous_execute(task)
+            else:
+                await agent.execute(task)
         except Exception as e:
             console.print(
                 agent.personality.format_message("error", f"[bold red]Error:[/] {str(e)}"),
