@@ -1,5 +1,6 @@
 from typing import List, Dict, Optional
 import openai
+from openai import AsyncOpenAI
 import os
 import json
 import logging
@@ -74,7 +75,7 @@ class Agent:
             "RUN_FILE": RunFileTool(base_dir),
             "RUN_LINUX_COMMAND": RunLinuxCommandTool(base_dir)
         }
-        openai.api_key = api_key
+        self.client = AsyncOpenAI(api_key=api_key)
         self.history = []
         self.setup_logging()
         
@@ -130,8 +131,8 @@ class Agent:
             "args": {{"param1": "value1", "param2": "value2"}}
         }}"""
         
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-4o-mini",
+        response = await self.client.chat.completions.create(
+            model="gpt-4",
             messages=[{"role": "user", "content": prompt}]
         )
         return response.choices[0].message.content
