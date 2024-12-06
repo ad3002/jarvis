@@ -117,35 +117,47 @@ class Agent:
         return []
 
     async def think(self, task: str) -> Dict:
-        prompt = f"""Given the following task: {task}
-        Working directory: {self.base_dir}
-        Available tools:
-        - CREATE_FILE: Creates a new file with content (paths relative to working directory)
-        - RUN_FILE: Executes a file (paths relative to working directory)
-        - RUN_LINUX_COMMAND: Executes a Linux command (from working directory)
-        
-        Provide your response in JSON format with the following structure:
-        {{
-            "thoughts": "your step-by-step reasoning",
-            "tool": "tool name to use",
-            "args": {{"param1": "value1", "param2": "value2"}}
-        }}"""
+        prompt = """Given the following task: {task}
+Working directory: {base_dir}
+Available tools:
+- CREATE_FILE: Creates a new file with content (paths relative to working directory)
+- RUN_FILE: Executes a file (paths relative to working directory)
+- RUN_LINUX_COMMAND: Executes a Linux command (from working directory)
+
+Provide your response in JSON format with the following structure:
+{{
+    "thoughts": "your step-by-step reasoning",
+    "tool": "tool name to use",
+    "args": {{"param1": "value1", "param2": "value2"}}
+}}
+
+Your response must be valid JSON.""".format(
+            task=task,
+            base_dir=self.base_dir
+        )
         
         response = await self.client.chat.completions.create(
             model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": "You are a helpful AI that always responds with valid JSON"},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
         )
-        return response.choices[0].message.content
-    
+        
+        content = response.choices[0].message.content.strip()
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse JSON response: {content}")
+            raise ValueError("Invalid JSON response from OpenAI") from e
+
     async def execute(self, task: str):
         try:
             logging.info(f"Executing task: {task}")
             decision = await self.think(task)
             
-            # Parse decision from JSON string if needed
-            if isinstance(decision, str):
-                decision = json.loads(decision)
-            
+            # No need to parse JSON here anymore as think() now returns a dict
             tool_name = decision["tool"]
             if tool_name == "RUN_LINUX_COMMAND":
                 if not self.validate_command(decision["args"]["command"]):
