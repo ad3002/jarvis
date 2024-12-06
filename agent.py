@@ -226,6 +226,15 @@ class Agent:
                 return [HistoryEntry(**entry) for entry in data]
         return []
 
+    def sanitize_json_string(self, text: str) -> str:
+        """Remove invalid Unicode characters and normalize JSON string."""
+        # Remove any unknown Unicode characters
+        cleaned = ''.join(char for char in text if ord(char) < 0x10000)
+        # Normalize quotes and whitespace
+        cleaned = cleaned.replace('"', '"').replace('"', '"')
+        cleaned = cleaned.replace('’, "'").replace('’, "'")
+        return cleaned.strip()
+
     async def think(self, task: str) -> Dict:
         # Dynamically adjust personality based on task
         suggested_tone = self.personality.choose_tone_for_task(task)
@@ -289,7 +298,22 @@ Your response must be valid JSON.""".format(
         
         content = response.choices[0].message.content.strip()
         try:
-            parsed = json.loads(content)
+            # Sanitize the JSON string before parsing
+            cleaned_content = self.sanitize_json_string(content)
+            parsed = json.loads(cleaned_content)
+            
+            # Additional validation to ensure all strings are properly encoded
+            def validate_strings(obj):
+                if isinstance(obj, str):
+                    return obj.encode('utf-8', errors='replace').decode('utf-8')
+                elif isinstance(obj, dict):
+                    return {k: validate_strings(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [validate_strings(item) for item in obj]
+                return obj
+            
+            parsed = validate_strings(parsed)
+            
             # Validate args match expected parameters
             tool_name = parsed["tool"]
             if tool_name == "CREATE_FILE":
@@ -308,8 +332,12 @@ Your response must be valid JSON.""".format(
             
             return parsed
         except json.JSONDecodeError as e:
-            logging.error(f"Failed to parse JSON response: {content}")
-            raise ValueError("Invalid JSON response from OpenAI") from e
+            logging.error(f"Failed to parse JSON response: {cleaned_content}")
+            logging.error(f"JSON Error: {str(e)}")
+            raise ValueError(f"Invalid JSON response from OpenAI: {str(e)}") from e
+        except Exception as e:
+            logging.error(f"Unexpected error processing response: {str(e)}")
+            raise ValueError(f"Error processing AI response: {str(e)}") from e
 
     async def execute(self, task: str):
         try:
