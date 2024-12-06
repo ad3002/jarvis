@@ -119,18 +119,30 @@ class Agent:
     async def think(self, task: str) -> Dict:
         prompt = """Given the following task: {task}
 Working directory: {base_dir}
-Available tools:
-- CREATE_FILE: Creates a new file with content (paths relative to working directory)
-- RUN_FILE: Executes a file (paths relative to working directory)
-- RUN_LINUX_COMMAND: Executes a Linux command (from working directory)
+
+Available tools and their required arguments:
+1. CREATE_FILE:
+   - filepath: str (path to the file to create)
+   - content: str (content to write to the file)
+
+2. RUN_FILE:
+   - filepath: str (path to the file to execute)
+
+3. RUN_LINUX_COMMAND:
+   - command: str (command to execute)
 
 Provide your response in JSON format with the following structure:
 {{
     "thoughts": "your step-by-step reasoning",
     "tool": "tool name to use",
-    "args": {{"param1": "value1", "param2": "value2"}}
+    "args": {{
+        "filepath": "path/to/file",  # for CREATE_FILE and RUN_FILE
+        "content": "file content",    # for CREATE_FILE only
+        "command": "command string"   # for RUN_LINUX_COMMAND only
+    }}
 }}
 
+IMPORTANT: Use exact argument names as specified above.
 Your response must be valid JSON.""".format(
             task=task,
             base_dir=self.base_dir
@@ -139,7 +151,7 @@ Your response must be valid JSON.""".format(
         response = await self.client.chat.completions.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a helpful AI that always responds with valid JSON"},
+                {"role": "system", "content": "You are a helpful AI that always responds with valid JSON using the exact argument names specified"},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -147,7 +159,20 @@ Your response must be valid JSON.""".format(
         
         content = response.choices[0].message.content.strip()
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
+            # Validate args match expected parameters
+            tool_name = parsed["tool"]
+            if tool_name == "CREATE_FILE":
+                required = {"filepath", "content"}
+                if not all(arg in parsed["args"] for arg in required):
+                    raise ValueError(f"Missing required arguments for CREATE_FILE. Required: {required}")
+            elif tool_name == "RUN_FILE":
+                if "filepath" not in parsed["args"]:
+                    raise ValueError("Missing required argument 'filepath' for RUN_FILE")
+            elif tool_name == "RUN_LINUX_COMMAND":
+                if "command" not in parsed["args"]:
+                    raise ValueError("Missing required argument 'command' for RUN_LINUX_COMMAND")
+            return parsed
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse JSON response: {content}")
             raise ValueError("Invalid JSON response from OpenAI") from e
