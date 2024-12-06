@@ -7,6 +7,12 @@ import logging
 import datetime
 from dataclasses import dataclass, asdict
 import hashlib
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.syntax import Syntax
+
+console = Console()
 
 @dataclass
 class HistoryEntry:
@@ -78,6 +84,7 @@ class Agent:
         self.client = AsyncOpenAI(api_key=api_key)
         self.history = []
         self.setup_logging()
+        self.console = Console()
         
     def setup_logging(self):
         log_dir = os.path.join(self.base_dir, 'logs')
@@ -117,6 +124,8 @@ class Agent:
         return []
 
     async def think(self, task: str) -> Dict:
+        self.console.print(Panel(f"🤔 Thinking about task: [bold blue]{task}[/]"))
+        
         prompt = """Given the following task: {task}
 Working directory: {base_dir}
 
@@ -172,6 +181,10 @@ Your response must be valid JSON.""".format(
             elif tool_name == "RUN_LINUX_COMMAND":
                 if "command" not in parsed["args"]:
                     raise ValueError("Missing required argument 'command' for RUN_LINUX_COMMAND")
+            
+            self.console.print(Panel(Markdown(f"💭 Thoughts: {parsed['thoughts']}")))
+            self.console.print(f"🛠 Using tool: [bold green]{parsed['tool']}[/]")
+            
             return parsed
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse JSON response: {content}")
@@ -205,6 +218,16 @@ Your response must be valid JSON.""".format(
             self.save_history()
             
             logging.info(f"Task completed successfully: {task}")
+            
+            # Pretty print the result based on content
+            if isinstance(result, str) and result.startswith("File created:"):
+                self.console.print(Panel(f"✅ [bold green]{result}[/]"))
+            elif result.strip():
+                if "```" in result or result.count('\n') > 1:
+                    self.console.print(Panel(Syntax(result, "python")))
+                else:
+                    self.console.print(Panel(f"📝 Output: {result}"))
+            
             return result
             
         except Exception as e:
@@ -220,4 +243,5 @@ Your response must be valid JSON.""".format(
             )
             self.history.append(entry)
             self.save_history()
+            self.console.print(f"❌ [bold red]Error:[/] {str(e)}", style="red")
             raise
