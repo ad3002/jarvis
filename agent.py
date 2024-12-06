@@ -232,7 +232,7 @@ class Agent:
         cleaned = ''.join(char for char in text if ord(char) < 0x10000)
         # Normalize quotes and whitespace
         cleaned = cleaned.replace('"', '"').replace('"', '"')
-        cleaned = cleaned.replace('’, "'").replace('’, "'")
+        cleaned = cleaned.replace("'", "'").replace("'", "'")
         return cleaned.strip()
 
     async def think(self, task: str) -> Dict:
