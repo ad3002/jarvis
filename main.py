@@ -14,7 +14,8 @@ async def main():
     
     agent = Agent(api_key, base_dir=os.path.dirname(os.path.abspath(__file__)))
     
-    console.print(Panel("[bold blue]🤖 AI Agent Assistant[/]"))
+    console.print(Panel(f"[bold blue]🤖 {agent.personality.name} - AI Assistant[/]"))
+    console.print(Panel(agent.personality.tone_patterns[agent.personality.tone]["greeting"]))
     
     while True:
         task = Prompt.ask("\n[bold green]Enter your task[/] (or 'exit' to quit)")
@@ -25,7 +26,10 @@ async def main():
         try:
             result = await agent.execute(task)
         except Exception as e:
-            console.print(f"[bold red]Error:[/] {str(e)}", style="red")
+            console.print(
+                agent.personality.format_message("error", f"[bold red]Error:[/] {str(e)}"),
+                style="red"
+            )
 
 if __name__ == "__main__":
     asyncio.run(main())

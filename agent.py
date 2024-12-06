@@ -24,6 +24,107 @@ class HistoryEntry:
     result: str
     status: str
 
+@dataclass
+class Memory:
+    max_entries: int = 10
+    entries: List[Dict] = None
+
+    def __post_init__(self):
+        self.entries = self.entries or []
+
+    def add(self, task: str, thoughts: str, result: str, status: str):
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "task": task,
+            "thoughts": thoughts,
+            "result": result,
+            "status": status
+        }
+        self.entries.append(entry)
+        if len(self.entries) > self.max_entries:
+            self.entries.pop(0)
+
+    def get_context(self) -> str:
+        if not self.entries:
+            return "No previous interactions."
+        
+        context = "Previous interactions:\n"
+        for entry in self.entries:
+            context += f"\nTask: {entry['task']}\n"
+            context += f"Outcome: {'✓ Success' if entry['status'] == 'success' else '✗ Failed'}\n"
+            if entry['status'] == 'error':
+                context += f"Error: {entry['result']}\n"
+        return context
+
+@dataclass
+class Personality:
+    name: str = "Jarvis"
+    tone: str = "professional"  # professional, friendly, humorous
+    emoji_style: bool = True
+    
+    def __post_init__(self):
+        self.tone_patterns = {
+            "professional": {
+                "greeting": "Greetings. How may I assist you?",
+                "thinking": "Analyzing task...",
+                "success": "Task completed successfully.",
+                "error": "An error has occurred.",
+                "emoji": {
+                    "think": "🤔",
+                    "success": "✅",
+                    "error": "❌",
+                    "working": "⚙️"
+                },
+                "suitable_for": ["technical", "complex", "critical", "security", "deployment"]
+            },
+            "friendly": {
+                "greeting": "Hey there! Ready to help!",
+                "thinking": "Let me think about this...",
+                "success": "Great! All done!",
+                "error": "Oops! Something went wrong.",
+                "emoji": {
+                    "think": "💭",
+                    "success": "🌟",
+                    "error": "😅",
+                    "working": "💪"
+                },
+                "suitable_for": ["learning", "guidance", "explanation", "help", "simple"]
+            },
+            "humorous": {
+                "greeting": "Beep boop! Your friendly AI is here!",
+                "thinking": "Computing... *makes robot noises*",
+                "success": "Mission accomplished! *virtual high five*",
+                "error": "Whoopsie! Even AIs have bad days!",
+                "emoji": {
+                    "think": "🤖",
+                    "success": "🎉",
+                    "error": "🙈",
+                    "working": "⚡"
+                },
+                "suitable_for": ["creative", "fun", "experimental", "casual", "exploration"]
+            }
+        }
+
+    def choose_tone_for_task(self, task: str) -> str:
+        task_lower = task.lower()
+        scores = {tone: 0 for tone in self.tone_patterns.keys()}
+        
+        for tone, pattern in self.tone_patterns.items():
+            for keyword in pattern["suitable_for"]:
+                if keyword in task_lower:
+                    scores[tone] += 1
+                    
+        # Default to professional if no clear match
+        return max(scores.items(), key=lambda x: x[1])[0] or "professional"
+
+    def format_message(self, message_type: str, message: str) -> str:
+        tone = self.tone_patterns[self.tone]
+        emoji = tone["emoji"][message_type] if self.emoji_style else ""
+        return f"{emoji} {message}"
+
+    def get_thinking_prompt(self) -> str:
+        return self.tone_patterns[self.tone]["thinking"]
+
 class Tool:
     def __init__(self, name: str, description: str, base_dir: str):
         self.name = name
@@ -83,6 +184,8 @@ class Agent:
         }
         self.client = AsyncOpenAI(api_key=api_key)
         self.history = []
+        self.memory = Memory()
+        self.personality = Personality()
         self.setup_logging()
         self.console = Console()
         
@@ -124,10 +227,24 @@ class Agent:
         return []
 
     async def think(self, task: str) -> Dict:
-        self.console.print(Panel(f"🤔 Thinking about task: [bold blue]{task}[/]"))
+        # Dynamically adjust personality based on task
+        suggested_tone = self.personality.choose_tone_for_task(task)
+        if self.personality.tone != suggested_tone:
+            self.personality.tone = suggested_tone
+            self.console.print(Panel(
+                f"Adjusting tone to [bold blue]{suggested_tone}[/] for this task"
+            ))
+
+        self.console.print(Panel(
+            self.personality.format_message("think", f"Thinking about task: [bold blue]{task}[/]")
+        ))
         
         prompt = """Given the following task: {task}
 Working directory: {base_dir}
+
+{memory_context}
+
+Respond in the style of {personality_desc}
 
 Available tools and their required arguments:
 1. CREATE_FILE:
@@ -139,6 +256,8 @@ Available tools and their required arguments:
 
 3. RUN_LINUX_COMMAND:
    - command: str (command to execute)
+
+Consider previous interactions when making decisions. If similar tasks failed before, try a different approach.
 
 Provide your response in JSON format with the following structure:
 {{
@@ -154,7 +273,9 @@ Provide your response in JSON format with the following structure:
 IMPORTANT: Use exact argument names as specified above.
 Your response must be valid JSON.""".format(
             task=task,
-            base_dir=self.base_dir
+            base_dir=self.base_dir,
+            memory_context=self.memory.get_context(),
+            personality_desc=f"a {self.personality.tone} assistant named {self.personality.name}"
         )
         
         response = await self.client.chat.completions.create(
@@ -204,7 +325,7 @@ Your response must be valid JSON.""".format(
             tool = self.tools[tool_name]
             result = await tool.execute(**decision["args"])
             
-            # Save to history
+            # Save to both history and memory
             entry = HistoryEntry(
                 timestamp=datetime.datetime.now().isoformat(),
                 task=task,
@@ -216,17 +337,22 @@ Your response must be valid JSON.""".format(
             )
             self.history.append(entry)
             self.save_history()
+            self.memory.add(task, decision.get("thoughts", ""), result, "success")
             
             logging.info(f"Task completed successfully: {task}")
             
             # Pretty print the result based on content
             if isinstance(result, str) and result.startswith("File created:"):
-                self.console.print(Panel(f"✅ [bold green]{result}[/]"))
+                self.console.print(Panel(
+                    self.personality.format_message("success", f"[bold green]{result}[/]")
+                ))
             elif result.strip():
                 if "```" in result or result.count('\n') > 1:
                     self.console.print(Panel(Syntax(result, "python")))
                 else:
-                    self.console.print(Panel(f"📝 Output: {result}"))
+                    self.console.print(Panel(
+                        self.personality.format_message("working", f"Output: {result}")
+                    ))
             
             return result
             
@@ -243,5 +369,9 @@ Your response must be valid JSON.""".format(
             )
             self.history.append(entry)
             self.save_history()
-            self.console.print(f"❌ [bold red]Error:[/] {str(e)}", style="red")
+            self.memory.add(task, "", str(e), "error")
+            self.console.print(
+                self.personality.format_message("error", f"[bold red]Error:[/] {str(e)}"),
+                style="red"
+            )
             raise
