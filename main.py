@@ -6,7 +6,7 @@ from agent import Agent
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 async def main():
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_KEY")
     if not api_key:
         raise ValueError("Please set OPENAI_API_KEY environment variable")
     
